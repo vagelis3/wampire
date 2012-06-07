@@ -10,6 +10,7 @@ our @EXPORT;
 our @EXPORT_OK = qw/get_logger/;
 
 my (%log_levels, %def_loggers, %old_subs, %prepared_packages);
+my $watched;
 
 BEGIN {
 	%log_levels = (
@@ -125,17 +126,17 @@ sub _do_watch {
 
 			if ($pkg eq 'main') {
 				*{ "${pkg}::$sub" } = sub {
-					my $logger = $def_loggers{'main'};
-					local $logger->[4] = \$@;
-					local $logger->[5] = [];
+					local $watched->[0] = 'main';
+					local $watched->[1] = $sub;
+					local $watched->[2] = [];
 					$@ = '';
 					&$old_sub;
 				};
 			} else {
 				*{ "${pkg}::$sub" } = sub {
-					my $logger = $def_loggers{$pkg};
-					local $logger->[4] = \${ "${pkg}::errstr" };
-					local $logger->[5] = [];
+					local $watched->[0] = $pkg;
+					local $watched->[1] = $sub;
+					local $watched->[2] = [];
 					${ "${pkg}::errstr" } = '';
 					&$old_sub;
 				};
@@ -157,13 +158,18 @@ sub _prepare_packages {
 
 		no strict 'refs';
 		${ "${pkg}::errstr" } = '';
-		$prepared_packages{$pkg} = undef;
+		$prepared_packages{$pkg} = \${ "${pkg}::errstr" };
 	}
 }
 
 sub import {
 	my $class = shift;
 	goto &get_logger;
+}
+
+BEGIN {
+	$watched = [undef, undef, undef];
+	$prepared_packages{'main'} = \$@;
 }
 
 {
@@ -296,9 +302,10 @@ sub import {
 						'callstack' => [],
 					};
 
-					if ($self->[4]) {
-						push(@{ $self->[5] }, $log_msg);
-						${ $self->[4] } = join("\n", map { $_->{'message'} } @{ $self->[5] });
+					my ($watched_pkg, $watched_sub, $err_arr) = @$watched;
+					if (defined($watched_pkg)) {
+						push(@$err_arr, $log_msg);
+						${ $prepared_packages{$watched_pkg} } = join("\n", map { $_->{'message'} } @$err_arr);
 					} else {
 						$self->[3]->[-1]->$sub($log_msg);
 					}
@@ -378,6 +385,22 @@ sub import {
 		return $self;
 	}
 
+	sub _format_msg {
+		my $log_message = shift;
+
+		my $msg = $log_message->{'message'};
+		my $pre = sprintf("[%s] [%s]", strftime("%Y-%m-%d %H:%M:%S", gmtime($log_message->{'time'}->[0])), $log_message->{'level'});
+		$msg =~ s/^[\r\f\n]*|[\r\f\n]*$//gs;
+		if ($msg =~ m/[\r\f\n]/s) {
+			$msg =~ s/^/+ /mg;
+			$msg =~ s/^\+ /* /s;
+			$msg =~ s/\+ ([^\r\f\n]+)$/* $1/s;
+		}
+		$msg =~ s/^(.*)$/$pre $1/mg;
+
+		return $msg;
+	}
+
 
 	package Logger::_stdlog_handler;
 
@@ -401,15 +424,11 @@ sub import {
 				my $self = shift;
 				my $log_message = shift;
 
-				my $msg = $log_message->{'message'};
-				my $pre = sprintf("[%s] [%s]", strftime("%Y-%m-%d %H:%M:%S", gmtime($log_message->{'time'}->[0])), $level);
-				$msg =~ s/^[\r\f\n]*|[\r\f\n]*$//gs;
-				$msg =~ s/^(.*)$/$pre $1/mg;
+				my $msg = Logger::_log_handler::_format_msg($log_message);
 				if ($severity > 0) {
 					print STDERR $msg, "\n";
-				} else {
-					print STDOUT $msg, "\n";
 				}
+				print STDOUT $msg, "\n";
 
 				return;
 			};
@@ -452,10 +471,7 @@ sub import {
 				my $self = shift;
 				my $log_message = shift;
 
-				my $msg = $log_message->{'message'};
-				my $pre = sprintf("[%s] [%s]", strftime("%Y-%m-%d %H:%M:%S", gmtime($log_message->{'time'}->[0])), $level);
-				$msg =~ s/^[\r\f\n]*|[\r\f\n]*$//gs;
-				$msg =~ s/^(.*)$/$pre $1/mg;
+				my $msg = Logger::_log_handler::_format_msg($log_message);
 
 				print {$self->[1]} $msg, "\n";
 

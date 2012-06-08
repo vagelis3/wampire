@@ -392,13 +392,21 @@ BEGIN {
 		my $pre = sprintf("[%s] [%s]", strftime("%Y-%m-%d %H:%M:%S", gmtime($log_message->{'time'}->[0])), $log_message->{'level'});
 		$msg =~ s/^[\r\f\n]*|[\r\f\n]*$//gs;
 		if ($msg =~ m/[\r\f\n]/s) {
-			$msg =~ s/^/+ /mg;
+			(my $lines) = $msg =~ s/^/+ /mg;
 			$msg =~ s/^\+ /* /s;
 			$msg =~ s/\+ ([^\r\f\n]+)$/* $1/s;
+			$msg = "multiline message ($lines lines):\n$msg";
 		}
 		$msg =~ s/^(.*)$/$pre $1/mg;
 
 		return $msg;
+	}
+
+	sub puts {
+		my $self = shift;
+
+		print {$self->[1]} @_;
+		return;
 	}
 
 
@@ -412,6 +420,13 @@ BEGIN {
 		my $class = shift;
 
 		return bless ['special:std'], ref($class) || $class;
+	}
+
+	sub puts {
+		my $self = shift;
+
+		print STDOUT @_;
+		return;
 	}
 
 	BEGIN {
@@ -444,6 +459,8 @@ BEGIN {
 		return bless ['special:devnull'], ref($class) || $class;
 	}
 
+	sub puts { return; }
+
 	BEGIN {
 		no strict 'refs';
 
@@ -473,9 +490,7 @@ BEGIN {
 
 				my $msg = Logger::_log_handler::_format_msg($log_message);
 
-				print {$self->[1]} $msg, "\n";
-
-				return;
+				return $self->puts($msg, "\n");
 			};
 		}
 	}
@@ -496,18 +511,51 @@ __END__
   my $logger = Logger::get_logger();
   $logger->level('warn');
 
-  watch_log('sub' => 'my_sub'); # alter subroutine my_sub
-                                # to set $! instead of logging
+  Logger::watch_log('sub' => 'my_sub'); # alter subroutine my_sub
+                                        # to set $@ instead of logging
 
   my_sub()
-  or exit_fatal("my_sub: $!");
+  or exit_fatal("my_sub: $@");
 
   log_warn('2x2 != 4') unless (2 * 2 == 4);
 
-  # in your classes
+  # in your package
   package Foo;
 
   use Logger;
+
+  our $errstr;
+
+  BEGIN {
+  	Logger::watch_log('package' => __PACKAGE__);
+
+  	my $logger = Logger::get_logger();
+  	$logger->level('debug'); # individully for this module
+  }
+
+  sub foo_sub {
+  	...
+  	bar()
+  	or return log_error "bar() failed: $errstr";
+  	return 1;
+  }
+
+  sub bar {
+  	...
+  	if ($error) {
+  		return log_error $error;
+  	}
+  	return 1;
+  }
+
+  # main program
+  use Logger;
+  use Foo;
+
+  Logger::watch_log('package' => 'Foo');
+
+  Foo::foo_sub()
+  or exit_error "Foo::foo_sub() failed with message: $Foo::errstr";
 
 =cut
 
